@@ -1,12 +1,16 @@
 import React, { useState, useEffect, useMemo } from "react";
-import { auth, isConfigValid, authService, taskService } from "./firebase";
+import { auth, isConfigValid, authService, taskService, projectService } from "./firebase";
 import { onAuthStateChanged } from "firebase/auth";
 
 function App() {
   // --- React State Hooks ---
   const [user, setUser] = useState(null);
   const [tasks, setTasks] = useState([]);
+  const [projects, setProjects] = useState([]);
   const [loading, setLoading] = useState(true);
+  
+  // Navigation & Filtering
+  const [activeProjectId, setActiveProjectId] = useState("inbox"); // 'inbox' means no specific project
   const [filter, setFilter] = useState("all");
   const [searchQuery, setSearchQuery] = useState("");
   const [toasts, setToasts] = useState([]);
@@ -19,103 +23,97 @@ function App() {
   const [editTitle, setEditTitle] = useState("");
   const [editDesc, setEditDesc] = useState("");
   
-  // Task Creator Form Fields
+  // Creation Forms
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [status, setStatus] = useState("Planned");
+  
+  const [newProjectName, setNewProjectName] = useState("");
+  const [isCreatingProject, setIsCreatingProject] = useState(false);
 
-  // --- Toast Manager Helpers ---
+  // --- Toast Manager ---
   const showToast = (message, type = "info") => {
     const id = Date.now() + Math.random().toString(36).substr(2, 5);
     setToasts((prev) => [...prev, { id, message, type }]);
     setTimeout(() => {
       setToasts((prev) => prev.filter((t) => t.id !== id));
-    }, 3500);
+    }, 3000);
   };
 
-  // --- Firebase Auth & Task Listeners ---
+  // --- Auth & Data Fetching ---
   useEffect(() => {
     if (!isConfigValid) {
       setLoading(false);
       return;
     }
 
-    const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
-      if (firebaseUser) {
-        setUser({
-          uid: firebaseUser.uid,
-          displayName: firebaseUser.displayName,
-          email: firebaseUser.email,
-          photoURL: firebaseUser.photoURL,
-        });
-        
+    const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
+      setUser(currentUser);
+      if (currentUser) {
         try {
-          const list = await taskService.fetchTasks(firebaseUser.uid);
-          setTasks(list);
-        } catch (e) {
-          showToast("Failed to load tasks from Firestore.", "error");
+          const [fetchedTasks, fetchedProjects] = await Promise.all([
+            taskService.fetchTasks(currentUser.uid),
+            projectService.fetchProjects(currentUser.uid)
+          ]);
+          setTasks(fetchedTasks);
+          setProjects(fetchedProjects);
+        } catch (error) {
+          showToast("Failed to fetch data from database.", "error");
         }
       } else {
-        setUser(null);
         setTasks([]);
+        setProjects([]);
       }
       setLoading(false);
     });
-
     return () => unsubscribe();
   }, []);
 
-  // --- Click outside listener to close task status dropdowns ---
+  // --- Click Outside to Close Dropdowns ---
   useEffect(() => {
-    const handleOutsideClick = (e) => {
-      if (activeDropdownTaskId && !e.target.closest(".status-dropdown-wrapper")) {
-        setActiveDropdownTaskId(null);
-      }
-    };
-    document.addEventListener("click", handleOutsideClick);
-    return () => document.removeEventListener("click", handleOutsideClick);
-  }, [activeDropdownTaskId]);
+    const handleClickOutside = () => setActiveDropdownTaskId(null);
+    document.addEventListener("click", handleClickOutside);
+    return () => document.removeEventListener("click", handleClickOutside);
+  }, []);
 
-  // --- Operations / Event Handlers ---
-
-  const handleGoogleLogin = async () => {
-    setLoading(true);
+  // --- Handlers ---
+  const handleLogin = async () => {
     try {
-      const loggedUser = await authService.loginWithGoogle();
-      showToast(`Welcome, ${loggedUser.displayName}!`, "success");
-    } catch (err) {
-      showToast("Sign-in process failed. Please check your console.", "error");
-    } finally {
-      setLoading(false);
+      await authService.loginWithGoogle();
+      showToast("Successfully logged in!", "success");
+    } catch (error) {
+      showToast(error.message, "error");
     }
   };
 
-  const handleLogout = async () => {
-    try {
-      await authService.logout();
-      setUser(null);
-      showToast("Signed out successfully.", "success");
-    } catch (err) {
-      showToast("Failed to sign out.", "error");
-    }
-  };
-
-  const handleAddTask = async (e) => {
+  const handleCreateProject = async (e) => {
     e.preventDefault();
-    if (!title.trim()) {
-      showToast("Task title cannot be blank.", "error");
-      return;
-    }
-
+    if (!newProjectName.trim()) return;
     try {
-      const newTask = await taskService.createTask(user.uid, title.trim(), description.trim(), status);
+      const newProj = await projectService.createProject(user.uid, newProjectName.trim());
+      setProjects((prev) => [...prev, newProj]);
+      setNewProjectName("");
+      setIsCreatingProject(false);
+      setActiveProjectId(newProj.id);
+      showToast("Project created successfully.", "success");
+    } catch (err) {
+      showToast("Failed to create project.", "error");
+    }
+  };
+
+  const handleCreateTask = async (e) => {
+    e.preventDefault();
+    if (!title.trim()) return;
+    try {
+      const targetProjectId = activeProjectId === "inbox" ? null : activeProjectId;
+      const newTask = await taskService.createTask(user.uid, targetProjectId, title.trim(), description.trim(), status);
       setTasks((prev) => [newTask, ...prev]);
       setTitle("");
       setDescription("");
       setStatus("Planned");
-      showToast("Task created successfully!", "success");
+      showToast("Task created successfully.", "success");
     } catch (err) {
-      showToast("Error adding task. Verify Firestore permissions.", "error");
+      showToast("Failed to create task.", "error");
     }
   };
 
@@ -167,12 +165,30 @@ function App() {
   };
 
   // --- Real-time Local Filters (useMemo for maximum speed) ---
+  const tasksInActiveProject = useMemo(() => {
+    if (activeProjectId === "inbox") {
+      // Inbox acts as a catch-all for tasks without a specific project assignment
+      return tasks.filter((t) => !t.projectId);
+    }
+    return tasks.filter((t) => t.projectId === activeProjectId);
+  }, [tasks, activeProjectId]);
+
   const filteredTasks = useMemo(() => {
-    return tasks
+    return tasksInActiveProject
       .filter((t) => filter === "all" || t.status === filter)
       .filter((t) => t.title.toLowerCase().includes(searchQuery.toLowerCase()) || (t.description && t.description.toLowerCase().includes(searchQuery.toLowerCase())))
       .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
-  }, [tasks, filter, searchQuery]);
+  }, [tasksInActiveProject, filter, searchQuery]);
+
+  // Dashboard Metrics
+  const metrics = useMemo(() => {
+    return {
+      total: tasksInActiveProject.length,
+      planned: tasksInActiveProject.filter(t => t.status === "Planned").length,
+      inProgress: tasksInActiveProject.filter(t => t.status === "In Progress").length,
+      complete: tasksInActiveProject.filter(t => t.status === "Complete").length,
+    };
+  }, [tasksInActiveProject]);
 
   const formatTaskDate = (isoString) => {
     try {
@@ -187,176 +203,199 @@ function App() {
     }
   };
 
-  // Loader screen
-  if (loading) {
-    return (
-      <div style={{ display: "flex", justifyContent: "center", alignItems: "center", minHeight: "80vh", flexDirection: "column", gap: "1rem" }}>
-        <div style={{ width: "40px", height: "40px", border: "3px solid rgba(255,255,255,0.05)", borderTopColor: "var(--primary)", borderRadius: "50%", animation: "spin 1s linear infinite" }}></div>
-        <p style={{ color: "var(--text-muted)", fontSize: "0.95rem" }}>Initializing connection...</p>
-        <style dangerouslySetInnerHTML={{__html: `
-          @keyframes spin { to { transform: rotate(360deg); } }
-        `}} />
-      </div>
-    );
-  }
+  const getActiveProjectName = () => {
+    if (activeProjectId === "inbox") return "Inbox";
+    const proj = projects.find(p => p.id === activeProjectId);
+    return proj ? proj.name : "Project";
+  };
 
-  // ==========================================================================
-  // VIEW: Setup Required (Missing or Placeholder Firebase Credentials)
-  // ==========================================================================
+  // --- Render Views ---
   if (!isConfigValid) {
     return (
-      <div className="app-container" style={{ display: "flex", alignItems: "center", justifyContent: "center", minHeight: "90vh" }}>
-        <div className="auth-card" style={{ maxWidth: "600px", textAlign: "left", padding: "2.5rem" }}>
-          <div className="logo-section" style={{ alignItems: "flex-start", marginBottom: "1.5rem" }}>
-            <h1 style={{ marginTop: "0.5rem" }}>Setup Required</h1>
-            <p>TaskFlow requires active Firebase credentials to run.</p>
+      <div className="auth-screen-layout">
+        <div className="auth-card">
+          <div className="logo-section">
+            <h1>Setup Required</h1>
+            <p>Please configure your Firebase credentials.</p>
           </div>
-          
-          <div style={{ fontSize: "0.9rem", color: "var(--text-muted)", lineHeight: "1.5", display: "flex", flexDirection: "column", gap: "1rem" }}>
-            <p>
-              Please initialize your environment configurations. Create a <code>.env</code> file in the <strong>root folder</strong> of your project and insert your Google Firebase web app keys:
-            </p>
-
-            <pre style={{
-              background: "rgba(0,0,0,0.3)",
-              padding: "1rem",
-              borderRadius: "var(--radius-sm)",
-              fontFamily: "monospace",
-              border: "1px solid var(--border-color)",
-              color: "#a5b4fc",
-              overflowX: "auto",
-              userSelect: "all"
-            }}>
-{`VITE_FIREBASE_API_KEY=your_api_key_here
-VITE_FIREBASE_AUTH_DOMAIN=your_project.firebaseapp.com
-VITE_FIREBASE_PROJECT_ID=your_project_id
-VITE_FIREBASE_STORAGE_BUCKET=your_project.appspot.com
-VITE_FIREBASE_MESSAGING_SENDER_ID=your_sender_id
-VITE_FIREBASE_APP_ID=your_app_id`}
+          <div style={{ textAlign: "left", background: "var(--bg-dark)", padding: "1rem", borderRadius: "6px", fontSize: "0.85rem" }}>
+            <p>1. Open <strong style={{color:"var(--text-main)"}}>.env</strong> in the project root.</p>
+            <p style={{marginTop:"0.5rem"}}>2. Insert your Firebase parameters:</p>
+            <pre style={{marginTop:"0.5rem", color:"var(--text-muted)", fontSize:"0.75rem"}}>
+              VITE_FIREBASE_API_KEY=...<br/>
+              VITE_FIREBASE_AUTH_DOMAIN=...
             </pre>
-
-            <p style={{ fontSize: "0.85rem", color: "var(--text-sub)" }}>
-              Once you create the file, restart your Vite development server (e.g. run <code>npm run dev</code> or refresh the browser) to initialize the secure multi-user task environment.
-            </p>
+            <p style={{marginTop:"0.5rem"}}>3. Restart the Vite server.</p>
           </div>
         </div>
       </div>
     );
   }
 
-  return (
-    <div className="app-container" style={{ maxWidth: "680px" }}>
-      {/* ==========================================================================
-         VIEW: Authentication Page (Logged Out)
-         ========================================================================== */}
-      {!user ? (
-        <div className="screen active auth-screen-layout">
-          <div className="auth-card">
-            <div className="logo-section">
-              <div className="logo-icon">
-                <svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M12 22c5.523 0 10-4.477 10-10S17.523 2 12 2 2 6.477 2 12s4.477 10 10 10z"/>
-                  <path d="M7.5 11.5L10 14l6.5-6.5"/>
-                </svg>
-              </div>
-              <h1>TaskFlow</h1>
-              <p>Organize your tasks elegantly and efficiently.</p>
-            </div>
+  if (loading) {
+    return <div className="auth-screen-layout"><p style={{color: "var(--text-muted)"}}>Loading workspace...</p></div>;
+  }
 
-            <div className="auth-buttons">
-              <button onClick={handleGoogleLogin} className="btn-google">
-                <svg width="20" height="20" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" style={{ marginRight: "4px" }}>
-                  <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4"/>
-                  <path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/>
-                  <path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z" fill="#FBBC05"/>
-                  <path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z" fill="#EA4335"/>
-                </svg>
-                Sign in with Google
-              </button>
-            </div>
+  if (!user) {
+    return (
+      <div className="auth-screen-layout">
+        <div className="auth-card">
+          <div className="logo-section">
+            <h1>TaskFlow</h1>
+            <p>Sign in to access your secure workspace.</p>
+          </div>
+          <div className="auth-buttons">
+            <button onClick={handleLogin} className="btn-google">
+              <svg viewBox="0 0 24 24" width="18" height="18" xmlns="http://www.w3.org/2000/svg">
+                <g transform="matrix(1, 0, 0, 1, 27.009001, -39.238998)">
+                  <path fill="#4285F4" d="M -3.264 51.509 C -3.264 50.719 -3.334 49.969 -3.454 49.239 L -14.754 49.239 L -14.754 53.749 L -8.284 53.749 C -8.574 55.229 -9.424 56.479 -10.684 57.329 L -10.684 60.329 L -6.824 60.329 C -4.564 58.239 -3.264 55.159 -3.264 51.509 Z"/>
+                  <path fill="#34A853" d="M -14.754 63.239 C -11.514 63.239 -8.804 62.159 -6.824 60.329 L -10.684 57.329 C -11.764 58.049 -13.134 58.489 -14.754 58.489 C -17.884 58.489 -20.534 56.379 -21.484 53.529 L -25.464 53.529 L -25.464 56.619 C -23.494 60.539 -19.444 63.239 -14.754 63.239 Z"/>
+                  <path fill="#FBBC05" d="M -21.484 53.529 C -21.734 52.809 -21.864 52.039 -21.864 51.239 C -21.864 50.439 -21.724 49.669 -21.484 48.949 L -21.484 45.859 L -25.464 45.859 C -26.284 47.479 -26.754 49.299 -26.754 51.239 C -26.754 53.179 -26.284 54.999 -25.464 56.619 L -21.484 53.529 Z"/>
+                  <path fill="#EA4335" d="M -14.754 43.989 C -12.984 43.989 -11.404 44.599 -10.154 45.789 L -6.734 42.369 C -8.804 40.429 -11.514 39.239 -14.754 39.239 C -19.444 39.239 -23.494 41.939 -25.464 45.859 L -21.484 48.949 C -20.534 46.099 -17.884 43.989 -14.754 43.989 Z"/>
+                </g>
+              </svg>
+              Sign in with Google
+            </button>
           </div>
         </div>
-      ) : (
-        /* ==========================================================================
-           VIEW: Simple Task Dashboard (Logged In)
-           ========================================================================== */
-        <div className="screen active" style={{ display: "flex", flexDirection: "column", gap: "1.75rem" }}>
-          
-          {/* Dashboard Header */}
-          <header className="dash-header">
-            <div className="dash-title-area">
-              <svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="var(--primary)" stroke-width="2.5" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M12 22c5.523 0 10-4.477 10-10S17.523 2 12 2 2 6.477 2 12s4.477 10 10 10z"/>
-                <path d="M7.5 11.5L10 14l6.5-6.5"/>
-              </svg>
-              <h2>TaskFlow</h2>
-              <span className="app-badge production">Firebase Connected</span>
-            </div>
+      </div>
+    );
+  }
 
-            {/* Profile Widget */}
-            <div className="user-profile-widget">
-              <img className="user-avatar" src={user.photoURL || "https://api.dicebear.com/7.x/adventurer/svg?seed=Alex"} alt="Profile" />
-              <div className="user-info">
-                <span className="user-name">{user.displayName}</span>
-                <span className="user-email">{user.email}</span>
-              </div>
-              <button onClick={handleLogout} className="btn-logout" title="Log Out">
-                <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>
-                  <polyline points="16 17 21 12 16 7"/>
-                  <line x1="21" y1="12" x2="9" y2="12"/>
-                </svg>
+  // === MAIN DASHBOARD ===
+  return (
+    <div className="app-container">
+      
+      {/* --- LEFT SIDEBAR --- */}
+      <aside className="sidebar">
+        <div className="sidebar-header">
+          <div className="app-brand">
+            <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg>
+            <h2>TaskFlow</h2>
+          </div>
+          <div className="user-profile-widget">
+            <img src={user.photoURL} alt="Profile" className="user-avatar" referrerPolicy="no-referrer" />
+            <div className="user-info">
+              <span className="user-name">{user.displayName}</span>
+              <span className="user-email">{user.email}</span>
+            </div>
+            <button onClick={() => authService.logout()} className="btn-logout" title="Log out">
+              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+            </button>
+          </div>
+        </div>
+
+        <div className="sidebar-section">
+          <div className="sidebar-section-title">
+            <span>Projects</span>
+            <button onClick={() => setIsCreatingProject(!isCreatingProject)} className="btn-add-project" title="Add Project">
+              <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+            </button>
+          </div>
+
+          <div className="project-list">
+            <button 
+              className={`project-item ${activeProjectId === "inbox" ? "active" : ""}`}
+              onClick={() => setActiveProjectId("inbox")}
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="22 12 16 12 14 15 10 15 8 12 2 12"/><path d="M5.45 5.11L2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/></svg>
+              Inbox
+            </button>
+
+            {projects.map(p => (
+              <button 
+                key={p.id}
+                className={`project-item ${activeProjectId === p.id ? "active" : ""}`}
+                onClick={() => setActiveProjectId(p.id)}
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><line x1="9" y1="3" x2="9" y2="21"/></svg>
+                {p.name}
               </button>
-            </div>
-          </header>
+            ))}
 
-          {/* Create Task Form Widget */}
-          <section className="panel-creator" style={{ position: "relative", top: "0" }}>
-            <h3 className="panel-title" style={{ fontSize: "1.1rem" }}>
-              <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" strokeLinecap="round" strokeLinejoin="round">
-                <line x1="12" y1="5" x2="12" y2="19"/>
-                <line x1="5" y1="12" x2="19" y2="12"/>
-              </svg>
-              Create New Task
-            </h3>
-            
-            <form onSubmit={handleAddTask} style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 150px", gap: "1rem" }}>
-                <div className="form-group" style={{ margin: "0" }}>
-                  <label htmlFor="task-title-input">Task Title *</label>
-                  <input 
-                    type="text" 
-                    id="task-title-input" 
-                    className="form-input" 
-                    placeholder="Enter task title..." 
-                    value={title}
-                    onChange={(e) => setTitle(e.target.value)}
-                    required 
-                    maxLength={80}
-                  />
-                </div>
+            {isCreatingProject && (
+              <form onSubmit={handleCreateProject} style={{ marginTop: "0.5rem" }}>
+                <input
+                  autoFocus
+                  type="text"
+                  placeholder="Project Name..."
+                  value={newProjectName}
+                  onChange={(e) => setNewProjectName(e.target.value)}
+                  className="form-input"
+                  style={{ padding: "0.4rem 0.6rem", fontSize: "0.8rem", width: "100%" }}
+                  onBlur={() => { if(!newProjectName) setIsCreatingProject(false); }}
+                />
+              </form>
+            )}
+          </div>
+        </div>
+      </aside>
 
-                <div className="form-group" style={{ margin: "0" }}>
-                  <label htmlFor="task-status-input">Status</label>
-                  <select 
-                    id="task-status-input" 
-                    className="form-input"
-                    value={status}
-                    onChange={(e) => setStatus(e.target.value)}
-                  >
-                    <option value="Planned">Planned</option>
-                    <option value="In Progress">In Progress</option>
-                    <option value="Complete">Complete</option>
-                  </select>
-                </div>
+      {/* --- RIGHT DASHBOARD CONTENT --- */}
+      <main className="main-content">
+        <div className="dashboard-header">
+          <div className="dashboard-title">
+            <h1>{getActiveProjectName()}</h1>
+            <p>Manage and track your workflow efficiently.</p>
+          </div>
+        </div>
+
+        {/* METRICS GRID */}
+        <div className="metrics-grid">
+          <div className="metric-card">
+            <span className="metric-title">Total Tasks</span>
+            <span className="metric-value">{metrics.total}</span>
+          </div>
+          <div className="metric-card">
+            <span className="metric-title">Planned</span>
+            <span className="metric-value" style={{color: "var(--text-muted)"}}>{metrics.planned}</span>
+          </div>
+          <div className="metric-card">
+            <span className="metric-title">In Progress</span>
+            <span className="metric-value">{metrics.inProgress}</span>
+          </div>
+          <div className="metric-card">
+            <span className="metric-title">Complete</span>
+            <span className="metric-value">{metrics.complete}</span>
+          </div>
+        </div>
+
+        <div className="content-grid">
+          {/* TASK CREATOR PANEL */}
+          <aside className="panel-creator">
+            <h3 className="panel-title">Add New Task</h3>
+            <form onSubmit={handleCreateTask} style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
+              <div className="form-group">
+                <label>Title</label>
+                <input 
+                  type="text" 
+                  className="form-input" 
+                  placeholder="e.g. Audit security logs" 
+                  value={title}
+                  onChange={(e) => setTitle(e.target.value)}
+                  maxLength={80}
+                  required 
+                />
               </div>
 
-              <div className="form-group" style={{ margin: "0" }}>
-                <label htmlFor="task-desc-input">Description (Optional)</label>
-                <textarea 
-                  id="task-desc-input" 
+              <div className="form-group">
+                <label>Status</label>
+                <select 
                   className="form-input" 
-                  rows={2} 
+                  value={status}
+                  onChange={(e) => setStatus(e.target.value)}
+                >
+                  <option value="Planned">Planned</option>
+                  <option value="In Progress">In Progress</option>
+                  <option value="Complete">Complete</option>
+                </select>
+              </div>
+
+              <div className="form-group">
+                <label>Description (Optional)</label>
+                <textarea 
+                  className="form-input" 
+                  rows="3" 
                   placeholder="Provide additional details..." 
                   value={description}
                   onChange={(e) => setDescription(e.target.value)}
@@ -368,23 +407,23 @@ VITE_FIREBASE_APP_ID=your_app_id`}
                 Create Task
               </button>
             </form>
-          </section>
+          </aside>
 
-          {/* Task Listing Panel */}
-          <main className="panel-viewer">
+          {/* TASK LIST PANEL */}
+          <section className="panel-viewer">
             <div className="controls-bar" style={{ display: "flex", flexDirection: "column", gap: "1rem", alignItems: "stretch" }}>
               {/* Search Bar */}
               <input 
                 type="text" 
                 className="form-input" 
-                placeholder="Search tasks..." 
+                placeholder="Search tasks in this project..." 
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 style={{ borderRadius: "20px", padding: "0.5rem 1.25rem", background: "transparent" }}
               />
 
               {/* Filter Pills */}
-              <div className="filters-wrapper" style={{ justifyContent: "center", width: "100%" }}>
+              <div className="filters-wrapper">
                 {["all", "Planned", "In Progress", "Complete"].map((f) => (
                   <button
                     key={f}
@@ -392,7 +431,7 @@ VITE_FIREBASE_APP_ID=your_app_id`}
                     onClick={() => setFilter(f)}
                     style={{ flex: "1", textAlign: "center" }}
                   >
-                    {f === "all" ? "All Tasks" : f}
+                    {f === "all" ? "All" : f}
                   </button>
                 ))}
               </div>
@@ -451,60 +490,54 @@ VITE_FIREBASE_APP_ID=your_app_id`}
                           </div>
                         </div>
 
-                    <div className="task-card-footer" style={{ border: "none", paddingTop: "0.5rem" }}>
-                      <div className="task-meta-time">
-                        <svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                          <circle cx="12" cy="12" r="10"/>
-                          <polyline points="12 6 12 12 16 14"/>
-                        </svg>
-                        <span>{formatTaskDate(task.createdAt)}</span>
-                      </div>
+                        <div className="task-card-footer" style={{ border: "none", paddingTop: "0.5rem" }}>
+                          <div className="task-meta-time">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                              <circle cx="12" cy="12" r="10"/>
+                              <polyline points="12 6 12 12 16 14"/>
+                            </svg>
+                            <span>{formatTaskDate(task.createdAt)}</span>
+                          </div>
 
-                      {/* Interactive Status Badge Selector */}
-                      <div className="status-dropdown-wrapper">
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setActiveDropdownTaskId(activeDropdownTaskId === task.id ? null : task.id);
-                          }}
-                          className={`status-badge-trigger ${
-                            task.status === "Planned" 
-                              ? "planned" 
-                              : task.status === "In Progress" 
-                              ? "progress" 
-                              : "complete"
-                          }`}
-                          style={{ padding: "0.3rem 0.75rem", borderRadius: "6px" }}
-                        >
-                          {task.status}
-                        </button>
+                          {/* Interactive Status Badge Selector */}
+                          <div className="status-dropdown-wrapper">
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setActiveDropdownTaskId(activeDropdownTaskId === task.id ? null : task.id);
+                              }}
+                              className={`status-badge-trigger ${
+                                task.status === "Planned" 
+                                  ? "planned" 
+                                  : task.status === "In Progress" 
+                                  ? "progress" 
+                                  : "complete"
+                              }`}
+                              style={{ padding: "0.3rem 0.75rem", borderRadius: "6px" }}
+                            >
+                              {task.status}
+                            </button>
 
-                        <div className={`status-options-menu ${activeDropdownTaskId === task.id ? "show" : ""}`}>
-                          {["Planned", "In Progress", "Complete"]
-                            .filter((statusOption) => {
-                              // Hide the task's current status from the dropdown options list
-                              if (statusOption === task.status) return false;
-                              
-                              // Rule 1: From Planned, you can only move to In Progress (Complete is blocked)
-                              if (task.status === "Planned" && statusOption === "Complete") return false;
-                              
-                              // Rule 2: From Complete, you can only move to In Progress (Planned is blocked)
-                              if (task.status === "Complete" && statusOption === "Planned") return false;
-                              
-                              return true;
-                            })
-                            .map((statusOption) => (
-                              <button
-                                key={statusOption}
-                                className="status-option"
-                                onClick={() => handleStatusUpdate(task.id, statusOption)}
-                              >
-                                {statusOption}
-                              </button>
-                            ))}
+                            <div className={`status-options-menu ${activeDropdownTaskId === task.id ? "show" : ""}`}>
+                              {["Planned", "In Progress", "Complete"]
+                                .filter((statusOption) => {
+                                  if (statusOption === task.status) return false;
+                                  if (task.status === "Planned" && statusOption === "Complete") return false;
+                                  if (task.status === "Complete" && statusOption === "Planned") return false;
+                                  return true;
+                                })
+                                .map((statusOption) => (
+                                  <button
+                                    key={statusOption}
+                                    className="status-option"
+                                    onClick={() => handleStatusUpdate(task.id, statusOption)}
+                                  >
+                                    {statusOption}
+                                  </button>
+                                ))}
+                            </div>
+                          </div>
                         </div>
-                      </div>
-                    </div>
                       </>
                     )}
                   </div>
@@ -512,25 +545,25 @@ VITE_FIREBASE_APP_ID=your_app_id`}
               ) : (
                 /* Empty state placeholder */
                 <div className="list-placeholder" style={{ padding: "3rem 1.5rem" }}>
-                  <h3 style={{ fontSize: "1.1rem" }}>No tasks in this category</h3>
+                  <h3 style={{ fontSize: "1.1rem" }}>No tasks in this project</h3>
                   <p style={{ color: "var(--text-sub)", fontSize: "0.825rem", marginTop: "-0.5rem" }}>
                     {filter !== "all" 
                       ? "Try checking under a different status filter" 
-                      : "Create your first task using the panel above!"
+                      : "Create your first task using the panel on the left!"
                     }
                   </p>
                 </div>
               )}
             </div>
-          </main>
+          </section>
         </div>
-      )}
+      </main>
 
-      {/* Dynamic Toast Alert stack */}
+      {/* Global Toast System */}
       <div className="toast-container">
-        {toasts.map((toast) => (
-          <div key={toast.id} className={`toast ${toast.type}`}>
-            {toast.message}
+        {toasts.map((t) => (
+          <div key={t.id} className="toast" style={{ borderLeft: `3px solid ${t.type === 'error' ? '#ef4444' : '#111827'}` }}>
+            {t.message}
           </div>
         ))}
       </div>

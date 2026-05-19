@@ -81,6 +81,30 @@ export const authService = {
   }
 };
 
+export const projectService = {
+  fetchProjects: async (userId) => {
+    if (!db) throw new Error("Firestore is not initialized.");
+    const projectsRef = collection(db, "users", userId, "projects");
+    const q = query(projectsRef, orderBy("createdAt", "asc"));
+    const snapshot = await getDocs(q);
+    return snapshot.docs.map(doc => ({
+      id: doc.id,
+      ...doc.data()
+    }));
+  },
+
+  createProject: async (userId, name) => {
+    if (!db) throw new Error("Firestore is not initialized.");
+    const projectData = {
+      name,
+      createdAt: new Date().toISOString()
+    };
+    const projectsRef = collection(db, "users", userId, "projects");
+    const docRef = await addDoc(projectsRef, projectData);
+    return { id: docRef.id, ...projectData };
+  }
+};
+
 export const taskService = {
   fetchTasks: async (userId) => {
     if (!db) throw new Error("Firestore is not initialized.");
@@ -93,9 +117,10 @@ export const taskService = {
     }));
   },
 
-  createTask: async (userId, title, description, status) => {
+  createTask: async (userId, projectId, title, description, status) => {
     if (!db) throw new Error("Firestore is not initialized.");
     const taskData = {
+      projectId, // Links task to a project
       title,
       description: description || "",
       status,
