@@ -282,27 +282,61 @@ input:focus, textarea:focus, select:focus {
   gap: 0.25rem;
 }
 
-.project-item {
-  width: 100%;
-  text-align: left;
-  padding: 0.5rem 0.75rem;
-  font-size: 0.85rem;
-  color: var(--text-sub);
-  border-radius: var(--radius-sm);
+.project-item-wrapper {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
+  justify-content: space-between;
+  width: 100%;
+  border-radius: var(--radius-sm);
+  color: var(--text-sub);
+  transition: all var(--transition-fast);
 }
 
-.project-item:hover {
+.project-item-wrapper:hover {
   background: var(--bg-dark);
   color: var(--text-main);
 }
 
-.project-item.active {
+.project-item-wrapper.active {
   background: var(--primary-light);
   color: var(--text-main);
   font-weight: 500;
+}
+
+.project-item {
+  flex: 1;
+  text-align: left;
+  padding: 0.5rem 0.75rem;
+  font-size: 0.85rem;
+  color: inherit;
+  border-radius: var(--radius-sm);
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.btn-delete-project {
+  opacity: 0;
+  color: var(--text-sub);
+  padding: 0.4rem;
+  margin-right: 0.25rem;
+  border-radius: var(--radius-sm);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all var(--transition-fast);
+}
+
+.project-item-wrapper:hover .btn-delete-project {
+  opacity: 1;
+}
+
+.btn-delete-project:hover {
+  color: #ef4444 !important;
+  background: var(--border-color);
 }
 
 /* ==========================================================================

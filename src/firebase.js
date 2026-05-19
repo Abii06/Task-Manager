@@ -102,6 +102,13 @@ export const projectService = {
     const projectsRef = collection(db, "users", userId, "projects");
     const docRef = await addDoc(projectsRef, projectData);
     return { id: docRef.id, ...projectData };
+  },
+
+  deleteProject: async (userId, projectId) => {
+    if (!db) throw new Error("Firestore is not initialized.");
+    const projectDoc = doc(db, "users", userId, "projects", projectId);
+    await deleteDoc(projectDoc);
+    return true;
   }
 };
 

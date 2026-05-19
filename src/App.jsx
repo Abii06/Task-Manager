@@ -10,7 +10,7 @@ function App() {
   const [loading, setLoading] = useState(true);
   
   // Navigation & Filtering
-  const [activeProjectId, setActiveProjectId] = useState("inbox"); // 'inbox' means no specific project
+  const [activeProjectId, setActiveProjectId] = useState(null);
   const [filter, setFilter] = useState("all");
   const [searchQuery, setSearchQuery] = useState("");
   const [toasts, setToasts] = useState([]);
@@ -57,6 +57,11 @@ function App() {
           ]);
           setTasks(fetchedTasks);
           setProjects(fetchedProjects);
+          if (fetchedProjects.length > 0) {
+            setActiveProjectId(fetchedProjects[0].id);
+          } else {
+            setActiveProjectId(null);
+          }
         } catch (error) {
           showToast("Failed to fetch data from database.", "error");
         }
@@ -100,6 +105,30 @@ function App() {
       showToast("Failed to create project.", "error");
     }
   };
+
+  const handleDeleteProject = async (e, projectId, projectName) => {
+    e.stopPropagation();
+    if (!window.confirm(`Are you sure you want to delete "${projectName}"? All tasks inside this project will be permanently deleted.`)) return;
+    try {
+      await projectService.deleteProject(user.uid, projectId);
+      
+      // Delete tasks inside this project from Firestore
+      const projectTasks = tasks.filter((t) => t.projectId === projectId);
+      await Promise.all(projectTasks.map((t) => taskService.deleteTask(user.uid, t.id)));
+      
+      setProjects((prev) => prev.filter((p) => p.id !== projectId));
+      setTasks((prev) => prev.filter((t) => t.projectId !== projectId));
+
+      if (activeProjectId === projectId) {
+        const remainingProjects = projects.filter((p) => p.id !== projectId);
+        setActiveProjectId(remainingProjects.length > 0 ? remainingProjects[0].id : null);
+      }
+      showToast(`Project "${projectName}" deleted.`, "info");
+    } catch (err) {
+      showToast("Failed to delete project.", "error");
+    }
+  };
+
 
   const handleCreateTask = async (e) => {
     e.preventDefault();
@@ -166,10 +195,7 @@ function App() {
 
   // --- Real-time Local Filters (useMemo for maximum speed) ---
   const tasksInActiveProject = useMemo(() => {
-    if (activeProjectId === "inbox") {
-      // Inbox acts as a catch-all for tasks without a specific project assignment
-      return tasks.filter((t) => !t.projectId);
-    }
+    if (!activeProjectId) return [];
     return tasks.filter((t) => t.projectId === activeProjectId);
   }, [tasks, activeProjectId]);
 
@@ -204,7 +230,7 @@ function App() {
   };
 
   const getActiveProjectName = () => {
-    if (activeProjectId === "inbox") return "Inbox";
+    if (!activeProjectId) return "Select a Project";
     const proj = projects.find(p => p.id === activeProjectId);
     return proj ? proj.name : "Project";
   };
@@ -294,23 +320,30 @@ function App() {
           </div>
 
           <div className="project-list">
-            <button 
-              className={`project-item ${activeProjectId === "inbox" ? "active" : ""}`}
-              onClick={() => setActiveProjectId("inbox")}
-            >
-              <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="22 12 16 12 14 15 10 15 8 12 2 12"/><path d="M5.45 5.11L2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/></svg>
-              Inbox
-            </button>
 
             {projects.map(p => (
-              <button 
-                key={p.id}
-                className={`project-item ${activeProjectId === p.id ? "active" : ""}`}
-                onClick={() => setActiveProjectId(p.id)}
+              <div 
+                key={p.id} 
+                className={`project-item-wrapper ${activeProjectId === p.id ? "active" : ""}`}
               >
-                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><line x1="9" y1="3" x2="9" y2="21"/></svg>
-                {p.name}
-              </button>
+                <button 
+                  className="project-item"
+                  onClick={() => setActiveProjectId(p.id)}
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><line x1="9" y1="3" x2="9" y2="21"/></svg>
+                  {p.name}
+                </button>
+                <button 
+                  onClick={(e) => handleDeleteProject(e, p.id, p.name)}
+                  className="btn-delete-project"
+                  title="Delete Project"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <polyline points="3 6 5 6 21 6"/>
+                    <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+                  </svg>
+                </button>
+              </div>
             ))}
 
             {isCreatingProject && (
@@ -333,7 +366,18 @@ function App() {
 
       {/* --- RIGHT DASHBOARD CONTENT --- */}
       <main className="main-content">
-        <div className="dashboard-header">
+        {!activeProjectId ? (
+          <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "100%", color: "var(--text-muted)", gap: "1rem", textAlign: "center" }}>
+            <svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><line x1="9" y1="3" x2="9" y2="21"/></svg>
+            <h2>No Project Selected</h2>
+            <p style={{ maxWidth: "360px", fontSize: "0.9rem" }}>Select a project from the left sidebar or create a new one to begin managing your workflow.</p>
+            <button onClick={() => setIsCreatingProject(true)} className="btn-submit" style={{ width: "auto", padding: "0.6rem 1.25rem", marginTop: "0.5rem" }}>
+              Create Project
+            </button>
+          </div>
+        ) : (
+          <>
+            <div className="dashboard-header">
           <div className="dashboard-title">
             <h1>{getActiveProjectName()}</h1>
             <p>Manage and track your workflow efficiently.</p>
@@ -557,6 +601,8 @@ function App() {
             </div>
           </section>
         </div>
+        </>
+        )}
       </main>
 
       {/* Global Toast System */}
