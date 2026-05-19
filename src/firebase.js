@@ -3,7 +3,10 @@ import {
   getAuth, 
   GoogleAuthProvider, 
   signInWithPopup, 
-  signOut 
+  signOut,
+  createUserWithEmailAndPassword,
+  signInWithEmailAndPassword,
+  updateProfile
 } from "firebase/auth";
 import { 
   getFirestore, 
@@ -71,6 +74,36 @@ export const authService = {
       displayName: result.user.displayName,
       email: result.user.email,
       photoURL: result.user.photoURL,
+    };
+  },
+
+  signUpWithEmail: async (email, password, displayName) => {
+    if (!isConfigValid || !auth) {
+      throw new Error("Firebase is not configured correctly.");
+    }
+    const result = await createUserWithEmailAndPassword(auth, email, password);
+    await updateProfile(result.user, {
+      displayName: displayName,
+      photoURL: `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(displayName)}`
+    });
+    return {
+      uid: result.user.uid,
+      displayName: result.user.displayName,
+      email: result.user.email,
+      photoURL: result.user.photoURL,
+    };
+  },
+
+  loginWithEmail: async (email, password) => {
+    if (!isConfigValid || !auth) {
+      throw new Error("Firebase is not configured correctly.");
+    }
+    const result = await signInWithEmailAndPassword(auth, email, password);
+    return {
+      uid: result.user.uid,
+      displayName: result.user.displayName,
+      email: result.user.email,
+      photoURL: result.user.photoURL || `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(result.user.displayName || "User")}`,
     };
   },
 

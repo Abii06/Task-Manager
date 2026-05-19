@@ -15,6 +15,12 @@ function App() {
   const [searchQuery, setSearchQuery] = useState("");
   const [toasts, setToasts] = useState([]);
   
+  // Email Auth Forms State
+  const [authMode, setAuthMode] = useState("signin"); // "signin" or "signup"
+  const [emailInput, setEmailInput] = useState("");
+  const [passwordInput, setPasswordInput] = useState("");
+  const [nameInput, setNameInput] = useState("");
+  
   // Status dropdown tracker (TaskId or null)
   const [activeDropdownTaskId, setActiveDropdownTaskId] = useState(null);
 
@@ -82,10 +88,34 @@ function App() {
   }, []);
 
   // --- Handlers ---
-  const handleLogin = async () => {
+  const handleGoogleLogin = async () => {
     try {
       await authService.loginWithGoogle();
       showToast("Successfully logged in!", "success");
+    } catch (error) {
+      showToast(error.message, "error");
+    }
+  };
+
+  const handleEmailAuth = async (e) => {
+    e.preventDefault();
+    if (!emailInput.trim() || !passwordInput.trim()) {
+      showToast("Email and password are required.", "error");
+      return;
+    }
+    if (authMode === "signup" && !nameInput.trim()) {
+      showToast("Name is required.", "error");
+      return;
+    }
+
+    try {
+      if (authMode === "signup") {
+        await authService.signUpWithEmail(emailInput.trim(), passwordInput.trim(), nameInput.trim());
+        showToast("Account created successfully!", "success");
+      } else {
+        await authService.loginWithEmail(emailInput.trim(), passwordInput.trim());
+        showToast("Logged in successfully!", "success");
+      }
     } catch (error) {
       showToast(error.message, "error");
     }
@@ -265,13 +295,67 @@ function App() {
   if (!user) {
     return (
       <div className="auth-screen-layout">
-        <div className="auth-card">
+        <div className="auth-card" style={{ maxWidth: "420px" }}>
           <div className="logo-section">
             <h1>TaskFlow</h1>
-            <p>Sign in to access your secure workspace.</p>
+            <p>{authMode === "signin" ? "Sign in to access your secure workspace." : "Create a new workspace account."}</p>
           </div>
-          <div className="auth-buttons">
-            <button onClick={handleLogin} className="btn-google">
+          
+          <form onSubmit={handleEmailAuth} className="auth-form" style={{ display: "flex", flexDirection: "column", gap: "0.85rem", textAlign: "left", marginBottom: "1.25rem" }}>
+            {authMode === "signup" && (
+              <div className="form-group">
+                <label>Name</label>
+                <input 
+                  type="text" 
+                  className="form-input" 
+                  placeholder="e.g. John Doe"
+                  value={nameInput}
+                  onChange={(e) => setNameInput(e.target.value)}
+                  style={{ width: "100%", padding: "0.6rem 0.75rem", borderRadius: "6px", fontSize: "0.85rem" }}
+                  required 
+                />
+              </div>
+            )}
+            
+            <div className="form-group">
+              <label>Email</label>
+              <input 
+                type="email" 
+                className="form-input" 
+                placeholder="name@example.com"
+                value={emailInput}
+                onChange={(e) => setEmailInput(e.target.value)}
+                style={{ width: "100%", padding: "0.6rem 0.75rem", borderRadius: "6px", fontSize: "0.85rem" }}
+                required 
+              />
+            </div>
+            
+            <div className="form-group">
+              <label>Password</label>
+              <input 
+                type="password" 
+                className="form-input" 
+                placeholder="••••••••"
+                value={passwordInput}
+                onChange={(e) => setPasswordInput(e.target.value)}
+                style={{ width: "100%", padding: "0.6rem 0.75rem", borderRadius: "6px", fontSize: "0.85rem" }}
+                required 
+              />
+            </div>
+            
+            <button type="submit" className="btn-submit" style={{ padding: "0.65rem 1rem", fontSize: "0.9rem", marginTop: "0.5rem" }}>
+              {authMode === "signin" ? "Sign In" : "Sign Up"}
+            </button>
+          </form>
+
+          <div className="auth-divider" style={{ display: "flex", alignItems: "center", textTransform: "uppercase", fontSize: "0.7rem", color: "var(--text-sub)", margin: "1.5rem 0" }}>
+            <span style={{ flex: 1, height: "1px", background: "var(--border-color)" }}></span>
+            <span style={{ padding: "0 0.75rem" }}>or continue with</span>
+            <span style={{ flex: 1, height: "1px", background: "var(--border-color)" }}></span>
+          </div>
+
+          <div className="auth-buttons" style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
+            <button onClick={handleGoogleLogin} className="btn-google">
               <svg viewBox="0 0 24 24" width="18" height="18" xmlns="http://www.w3.org/2000/svg">
                 <g transform="matrix(1, 0, 0, 1, 27.009001, -39.238998)">
                   <path fill="#4285F4" d="M -3.264 51.509 C -3.264 50.719 -3.334 49.969 -3.454 49.239 L -14.754 49.239 L -14.754 53.749 L -8.284 53.749 C -8.574 55.229 -9.424 56.479 -10.684 57.329 L -10.684 60.329 L -6.824 60.329 C -4.564 58.239 -3.264 55.159 -3.264 51.509 Z"/>
@@ -282,6 +366,24 @@ function App() {
               </svg>
               Sign in with Google
             </button>
+          </div>
+
+          <div style={{ marginTop: "1.5rem", fontSize: "0.8rem", color: "var(--text-muted)" }}>
+            {authMode === "signin" ? (
+              <span>
+                Don't have an account?{" "}
+                <button onClick={() => setAuthMode("signup")} style={{ fontWeight: "600", color: "var(--text-main)", textDecoration: "underline" }}>
+                  Sign Up
+                </button>
+              </span>
+            ) : (
+              <span>
+                Already have an account?{" "}
+                <button onClick={() => setAuthMode("signin")} style={{ fontWeight: "600", color: "var(--text-main)", textDecoration: "underline" }}>
+                  Sign In
+                </button>
+              </span>
+            )}
           </div>
         </div>
       </div>
